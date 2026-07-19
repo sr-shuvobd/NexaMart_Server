@@ -1,4 +1,5 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -223,6 +224,48 @@ app.use(morgan("dev"));
 app.use(express.json());
 
 // ════════════════════════════════════════════════════════
+//  Authentication Middleware
+// ════════════════════════════════════════════════════════
+
+const requireAuth = (req: Request, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ success: false, error: "Unauthorized: No token provided" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  const secret = process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET || "fallback_secret";
+
+  try {
+    const decoded = jwt.verify(token, secret);
+    (req as any).user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Invalid token" });
+  }
+};
+
+const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
+  requireAuth(req, res, () => {
+    if ((req as any).user.role === "admin") {
+      next();
+    } else {
+      res.status(403).json({ success: false, error: "Forbidden: Admin access required" });
+    }
+  });
+};
+
+const requireSeller = (req: Request, res: Response, next: NextFunction) => {
+  requireAuth(req, res, () => {
+    if ((req as any).user.role === "seller" || (req as any).user.role === "admin") {
+      next();
+    } else {
+      res.status(403).json({ success: false, error: "Forbidden: Seller access required" });
+    }
+  });
+};
+
+// ════════════════════════════════════════════════════════
 //  Health Check
 // ════════════════════════════════════════════════════════
 
@@ -296,7 +339,7 @@ app.get("/api/products/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/products", async (req: Request, res: Response) => {
+app.post("/api/products", requireSeller, async (req: Request, res: Response) => {
   try {
     const { name, price, originalPrice, description, category, image, badge, stock, sellerId } =
       req.body;
@@ -324,7 +367,7 @@ app.post("/api/products", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/api/products/:id", async (req: Request, res: Response) => {
+app.put("/api/products/:id", requireSeller, async (req: Request, res: Response) => {
   try {
     const updated = await Product.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
@@ -338,7 +381,7 @@ app.put("/api/products/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/products/:id", async (req: Request, res: Response) => {
+app.delete("/api/products/:id", requireSeller, async (req: Request, res: Response) => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
     if (!deleted) {
@@ -354,7 +397,7 @@ app.delete("/api/products/:id", async (req: Request, res: Response) => {
 //  User Routes (Admin)
 // ════════════════════════════════════════════════════════
 
-app.get("/api/users", async (_req: Request, res: Response) => {
+app.get("/api/users", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const users = await User.find({}).sort({ createdAt: -1 });
     res.json({ success: true, users });
@@ -363,7 +406,7 @@ app.get("/api/users", async (_req: Request, res: Response) => {
   }
 });
 
-app.get("/api/users/:id", async (req: Request, res: Response) => {
+app.get("/api/users/:id", requireAuth, async (req: Request, res: Response) => {
   try {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, error: "User not found" });
@@ -373,7 +416,7 @@ app.get("/api/users/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/api/users/:id/role", async (req: Request, res: Response) => {
+app.put("/api/users/:id/role", requireAdmin, async (req: Request, res: Response) => {
   try {
     const userToUpdate = await User.findById(req.params.id);
     if (userToUpdate && userToUpdate.email === "srs@gmail.com") {
@@ -392,7 +435,7 @@ app.put("/api/users/:id/role", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/api/users/:id/status", async (req: Request, res: Response) => {
+app.put("/api/users/:id/status", requireAdmin, async (req: Request, res: Response) => {
   try {
     const userToUpdate = await User.findById(req.params.id);
     if (userToUpdate && userToUpdate.email === "srs@gmail.com") {
@@ -411,7 +454,7 @@ app.put("/api/users/:id/status", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/api/users/:id/addresses", async (req: Request, res: Response) => {
+app.put("/api/users/:id/addresses", requireAuth, async (req: Request, res: Response) => {
   try {
     const { addresses } = req.body;
     const updated = await User.findByIdAndUpdate(
@@ -435,7 +478,7 @@ app.put("/api/users/:id/addresses", async (req: Request, res: Response) => {
 // POST /api/orders              → Place an order
 // PUT  /api/orders/:id/status   → Update order status
 
-app.get("/api/orders", async (_req: Request, res: Response) => {
+app.get("/api/orders", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const orders = await Order.find({}).sort({ createdAt: -1 });
     res.json({ success: true, orders });
@@ -444,7 +487,7 @@ app.get("/api/orders", async (_req: Request, res: Response) => {
   }
 });
 
-app.get("/api/orders/user/:userId", async (req: Request, res: Response) => {
+app.get("/api/orders/user/:userId", requireAuth, async (req: Request, res: Response) => {
   try {
     const orders = await Order.find({ customerId: req.params.userId }).sort({
       createdAt: -1,
@@ -455,7 +498,7 @@ app.get("/api/orders/user/:userId", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/orders/seller/:sellerId", async (req: Request, res: Response) => {
+app.get("/api/orders/seller/:sellerId", requireSeller, async (req: Request, res: Response) => {
   try {
     // Find all products by this seller, then find orders containing those product IDs
     const sellerProducts = await Product.find({ sellerId: req.params.sellerId }).select("_id");
@@ -471,7 +514,7 @@ app.get("/api/orders/seller/:sellerId", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/orders", async (req: Request, res: Response) => {
+app.post("/api/orders", requireAuth, async (req: Request, res: Response) => {
   try {
     const { customerId, customerName, customerEmail, items, totalAmount, shippingAddress, paymentMethod } =
       req.body;
@@ -502,7 +545,7 @@ app.post("/api/orders", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/api/orders/:id/status", async (req: Request, res: Response) => {
+app.put("/api/orders/:id/status", requireSeller, async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
     const updated = await Order.findByIdAndUpdate(
@@ -523,7 +566,7 @@ app.put("/api/orders/:id/status", async (req: Request, res: Response) => {
 //  Dashboard Stats (Admin)
 // ════════════════════════════════════════════════════════
 
-app.get("/api/stats/admin", async (_req: Request, res: Response) => {
+app.get("/api/stats/admin", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const totalProducts = await Product.countDocuments();
     const totalOrders = await Order.countDocuments();
@@ -558,7 +601,7 @@ app.get("/api/stats/admin", async (_req: Request, res: Response) => {
 //  Dashboard Stats (Seller)
 // ════════════════════════════════════════════════════════
 
-app.get("/api/stats/seller/:sellerId", async (req: Request, res: Response) => {
+app.get("/api/stats/seller/:sellerId", requireSeller, async (req: Request, res: Response) => {
   try {
     const sellerId = req.params.sellerId;
     const totalProducts = await Product.countDocuments({ sellerId });
@@ -608,7 +651,7 @@ app.post("/api/messages", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/messages", async (req: Request, res: Response) => {
+app.get("/api/messages", requireAdmin, async (req: Request, res: Response) => {
   try {
     const messages = await Message.find({}).sort({ createdAt: -1 });
     res.json({ success: true, messages });
@@ -617,7 +660,7 @@ app.get("/api/messages", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/api/messages/:id/read", async (req: Request, res: Response) => {
+app.put("/api/messages/:id/read", requireAdmin, async (req: Request, res: Response) => {
   try {
     const updated = await Message.findByIdAndUpdate(req.params.id, { read: true }, { new: true });
     res.json({ success: true, message: updated });
@@ -626,7 +669,7 @@ app.put("/api/messages/:id/read", async (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/messages/:id", async (req: Request, res: Response) => {
+app.delete("/api/messages/:id", requireAdmin, async (req: Request, res: Response) => {
   try {
     await Message.findByIdAndDelete(req.params.id);
     res.json({ success: true });
@@ -651,7 +694,7 @@ app.get("/api/settings", async (_req: Request, res: Response) => {
   }
 });
 
-app.put("/api/settings", async (req: Request, res: Response) => {
+app.put("/api/settings", requireAdmin, async (req: Request, res: Response) => {
   try {
     const { storeName, storeEmail, currency } = req.body;
     let settings = await Settings.findOne();
