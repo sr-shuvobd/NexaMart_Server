@@ -72,9 +72,28 @@ interface IUser extends Document {
   email: string;
   role: string;
   status: string;
+  addresses?: {
+    id: string;
+    street: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    country: string;
+    isDefault: boolean;
+  }[];
   createdAt: Date;
   updatedAt: Date;
 }
+
+const AddressSchema = new Schema({
+  id: { type: String, required: true },
+  street: { type: String, required: true },
+  city: { type: String, required: true },
+  state: { type: String, required: true },
+  zipCode: { type: String, required: true },
+  country: { type: String, required: true },
+  isDefault: { type: Boolean, default: false }
+});
 
 const UserSchema = new Schema<IUser>(
   {
@@ -82,6 +101,7 @@ const UserSchema = new Schema<IUser>(
     email: { type: String, required: true, unique: true },
     role: { type: String, default: "user" },
     status: { type: String, default: "Active" },
+    addresses: [AddressSchema],
   },
   { timestamps: true, strict: false } // Strict false because better-auth adds its own fields
 );
@@ -164,6 +184,26 @@ const OrderSchema = new Schema<IOrder>(
 
 const Order: Model<IOrder> =
   mongoose.models.Order || mongoose.model<IOrder>("Order", OrderSchema);
+
+// ── Message (Contact) ──
+interface IMessage extends Document {
+  name: string;
+  email: string;
+  subject: string;
+  message: string;
+  read: boolean;
+  createdAt: Date;
+}
+
+const MessageSchema = new Schema<IMessage>({
+  name: { type: String, required: true },
+  email: { type: String, required: true },
+  subject: { type: String, required: true },
+  message: { type: String, required: true },
+  read: { type: Boolean, default: false },
+}, { timestamps: true });
+
+const Message: Model<IMessage> = mongoose.models.Message || mongoose.model<IMessage>("Message", MessageSchema);
 
 // ════════════════════════════════════════════════════════
 //  Express App Setup
@@ -323,6 +363,16 @@ app.get("/api/users", async (_req: Request, res: Response) => {
   }
 });
 
+app.get("/api/users/:id", async (req: Request, res: Response) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    res.json({ success: true, user });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.put("/api/users/:id/role", async (req: Request, res: Response) => {
   try {
     const userToUpdate = await User.findById(req.params.id);
@@ -353,6 +403,20 @@ app.put("/api/users/:id/status", async (req: Request, res: Response) => {
     const updated = await User.findByIdAndUpdate(
       req.params.id,
       { status },
+      { new: true }
+    );
+    res.json({ success: true, user: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put("/api/users/:id/addresses", async (req: Request, res: Response) => {
+  try {
+    const { addresses } = req.body;
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      { addresses },
       { new: true }
     );
     res.json({ success: true, user: updated });
@@ -525,6 +589,47 @@ app.get("/api/stats/seller/:sellerId", async (req: Request, res: Response) => {
         totalRevenue,
       },
     });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  Message Routes
+// ════════════════════════════════════════════════════════
+
+app.post("/api/messages", async (req: Request, res: Response) => {
+  try {
+    const newMessage = new Message(req.body);
+    await newMessage.save();
+    res.status(201).json({ success: true, message: "Message sent successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/messages", async (req: Request, res: Response) => {
+  try {
+    const messages = await Message.find({}).sort({ createdAt: -1 });
+    res.json({ success: true, messages });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put("/api/messages/:id/read", async (req: Request, res: Response) => {
+  try {
+    const updated = await Message.findByIdAndUpdate(req.params.id, { read: true }, { new: true });
+    res.json({ success: true, message: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete("/api/messages/:id", async (req: Request, res: Response) => {
+  try {
+    await Message.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
