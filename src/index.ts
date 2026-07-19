@@ -1,0 +1,454 @@
+import express, { Request, Response } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import morgan from "morgan";
+import mongoose, { Schema, Document, Model } from "mongoose";
+import * as dotenv from "dotenv";
+
+dotenv.config();
+
+// ════════════════════════════════════════════════════════
+//  MongoDB Connection
+// ════════════════════════════════════════════════════════
+
+const MONGODB_URI = process.env.MONGODB_URI!;
+
+async function connectDB() {
+  try {
+    await mongoose.connect(MONGODB_URI);
+    console.log("✅ MongoDB connected successfully");
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error);
+    process.exit(1);
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  Mongoose Models
+// ════════════════════════════════════════════════════════
+
+// ── Product ──
+interface IProduct extends Document {
+  name: string;
+  price: number;
+  originalPrice?: number;
+  description: string;
+  category: string;
+  image: string;
+  badge?: string;
+  rating: number;
+  reviews: number;
+  stock: number;
+  status: string;
+  sellerId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const ProductSchema = new Schema<IProduct>(
+  {
+    name: { type: String, required: true },
+    price: { type: Number, required: true },
+    originalPrice: { type: Number },
+    description: { type: String, default: "" },
+    category: { type: String, required: true },
+    image: { type: String, required: true },
+    badge: { type: String },
+    rating: { type: Number, default: 0 },
+    reviews: { type: Number, default: 0 },
+    stock: { type: Number, default: 0 },
+    status: { type: String, default: "Active" },
+    sellerId: { type: String, required: true },
+  },
+  { timestamps: true }
+);
+
+const Product: Model<IProduct> =
+  mongoose.models.Product || mongoose.model<IProduct>("Product", ProductSchema);
+
+// ── Order ──
+interface IOrderItem {
+  productId: string;
+  name: string;
+  price: number;
+  quantity: number;
+  image: string;
+}
+
+interface IOrder extends Document {
+  orderNumber: string;
+  customerId: string;
+  customerName: string;
+  customerEmail: string;
+  items: IOrderItem[];
+  totalAmount: number;
+  status: string;
+  shippingAddress: {
+    street: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    country: string;
+  };
+  paymentMethod: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const OrderItemSchema = new Schema<IOrderItem>({
+  productId: { type: String, required: true },
+  name: { type: String, required: true },
+  price: { type: Number, required: true },
+  quantity: { type: Number, required: true, min: 1 },
+  image: { type: String },
+});
+
+const OrderSchema = new Schema<IOrder>(
+  {
+    orderNumber: { type: String, required: true, unique: true },
+    customerId: { type: String, required: true },
+    customerName: { type: String, default: "" },
+    customerEmail: { type: String, default: "" },
+    items: [OrderItemSchema],
+    totalAmount: { type: Number, required: true },
+    status: { type: String, default: "Pending" },
+    shippingAddress: {
+      street: String,
+      city: String,
+      state: String,
+      zipCode: String,
+      country: String,
+    },
+    paymentMethod: { type: String, default: "COD" },
+  },
+  { timestamps: true }
+);
+
+const Order: Model<IOrder> =
+  mongoose.models.Order || mongoose.model<IOrder>("Order", OrderSchema);
+
+// ════════════════════════════════════════════════════════
+//  Express App Setup
+// ════════════════════════════════════════════════════════
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || "http://localhost:3001",
+    credentials: true,
+  })
+);
+app.use(helmet());
+app.use(morgan("dev"));
+app.use(express.json());
+
+// ════════════════════════════════════════════════════════
+//  Health Check
+// ════════════════════════════════════════════════════════
+
+app.get("/", (_req: Request, res: Response) => {
+  res.json({
+    message: "🚀 NexaMart API is running",
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ════════════════════════════════════════════════════════
+//  Product Routes
+// ════════════════════════════════════════════════════════
+
+// GET  /api/products         → All products (public)
+// GET  /api/products/:id     → Single product
+// GET  /api/products/seller/:sellerId → Seller's products
+// POST /api/products         → Create product
+// PUT  /api/products/:id     → Update product
+// DELETE /api/products/:id   → Delete product
+
+app.get("/api/products", async (_req: Request, res: Response) => {
+  try {
+    const { category, search, sort, limit } = _req.query;
+    const filter: any = {};
+
+    if (category && category !== "all") {
+      filter.category = category;
+    }
+    if (search) {
+      filter.name = { $regex: search, $options: "i" };
+    }
+
+    let query = Product.find(filter);
+
+    if (sort === "price_low") query = query.sort({ price: 1 });
+    else if (sort === "price_high") query = query.sort({ price: -1 });
+    else if (sort === "newest") query = query.sort({ createdAt: -1 });
+    else query = query.sort({ reviews: -1 }); // popular
+
+    if (limit) query = query.limit(Number(limit));
+
+    const products = await query;
+    res.json({ success: true, products });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/products/seller/:sellerId", async (req: Request, res: Response) => {
+  try {
+    const products = await Product.find({ sellerId: req.params.sellerId }).sort({
+      createdAt: -1,
+    });
+    res.json({ success: true, products });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/products/:id", async (req: Request, res: Response) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ success: false, error: "Product not found" });
+    }
+    res.json({ success: true, product });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/products", async (req: Request, res: Response) => {
+  try {
+    const { name, price, originalPrice, description, category, image, badge, stock, sellerId } =
+      req.body;
+
+    if (!name || !price || !category || !image || !sellerId) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+
+    const product = new Product({
+      name,
+      price,
+      originalPrice,
+      description,
+      category,
+      image,
+      badge,
+      stock: stock || 0,
+      sellerId,
+    });
+
+    const saved = await product.save();
+    res.status(201).json({ success: true, product: saved });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put("/api/products/:id", async (req: Request, res: Response) => {
+  try {
+    const updated = await Product.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+    });
+    if (!updated) {
+      return res.status(404).json({ success: false, error: "Product not found" });
+    }
+    res.json({ success: true, product: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete("/api/products/:id", async (req: Request, res: Response) => {
+  try {
+    const deleted = await Product.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, error: "Product not found" });
+    }
+    res.json({ success: true, message: "Product deleted" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  Order Routes
+// ════════════════════════════════════════════════════════
+
+// GET  /api/orders              → All orders (admin)
+// GET  /api/orders/user/:userId → User's orders
+// GET  /api/orders/seller/:sellerId → Orders containing seller's products
+// POST /api/orders              → Place an order
+// PUT  /api/orders/:id/status   → Update order status
+
+app.get("/api/orders", async (_req: Request, res: Response) => {
+  try {
+    const orders = await Order.find({}).sort({ createdAt: -1 });
+    res.json({ success: true, orders });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/orders/user/:userId", async (req: Request, res: Response) => {
+  try {
+    const orders = await Order.find({ customerId: req.params.userId }).sort({
+      createdAt: -1,
+    });
+    res.json({ success: true, orders });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/orders/seller/:sellerId", async (req: Request, res: Response) => {
+  try {
+    // Find all products by this seller, then find orders containing those product IDs
+    const sellerProducts = await Product.find({ sellerId: req.params.sellerId }).select("_id");
+    const productIds = sellerProducts.map((p) => p._id.toString());
+
+    const orders = await Order.find({
+      "items.productId": { $in: productIds },
+    }).sort({ createdAt: -1 });
+
+    res.json({ success: true, orders });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/orders", async (req: Request, res: Response) => {
+  try {
+    const { customerId, customerName, customerEmail, items, totalAmount, shippingAddress, paymentMethod } =
+      req.body;
+
+    if (!customerId || !items || items.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Customer ID and items are required" });
+    }
+
+    const orderNumber = `NM-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+
+    const order = new Order({
+      orderNumber,
+      customerId,
+      customerName,
+      customerEmail,
+      items,
+      totalAmount,
+      shippingAddress,
+      paymentMethod,
+    });
+
+    const saved = await order.save();
+    res.status(201).json({ success: true, order: saved });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put("/api/orders/:id/status", async (req: Request, res: Response) => {
+  try {
+    const { status } = req.body;
+    const updated = await Order.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(404).json({ success: false, error: "Order not found" });
+    }
+    res.json({ success: true, order: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  Dashboard Stats (Admin)
+// ════════════════════════════════════════════════════════
+
+app.get("/api/stats/admin", async (_req: Request, res: Response) => {
+  try {
+    const totalProducts = await Product.countDocuments();
+    const totalOrders = await Order.countDocuments();
+    const completedOrders = await Order.countDocuments({ status: "Completed" });
+    const pendingOrders = await Order.countDocuments({ status: "Pending" });
+
+    const revenueResult = await Order.aggregate([
+      { $match: { status: { $in: ["Completed", "Processing"] } } },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]);
+    const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
+
+    const recentOrders = await Order.find({}).sort({ createdAt: -1 }).limit(5);
+
+    res.json({
+      success: true,
+      stats: {
+        totalProducts,
+        totalOrders,
+        completedOrders,
+        pendingOrders,
+        totalRevenue,
+      },
+      recentOrders,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  Dashboard Stats (Seller)
+// ════════════════════════════════════════════════════════
+
+app.get("/api/stats/seller/:sellerId", async (req: Request, res: Response) => {
+  try {
+    const sellerId = req.params.sellerId;
+    const totalProducts = await Product.countDocuments({ sellerId });
+    const activeProducts = await Product.countDocuments({ sellerId, status: "Active" });
+
+    // Get orders that contain this seller's products
+    const sellerProducts = await Product.find({ sellerId }).select("_id");
+    const productIds = sellerProducts.map((p) => p._id.toString());
+
+    const orders = await Order.find({ "items.productId": { $in: productIds } });
+    const totalOrders = orders.length;
+
+    let totalRevenue = 0;
+    orders.forEach((order) => {
+      order.items.forEach((item) => {
+        if (productIds.includes(item.productId)) {
+          totalRevenue += item.price * item.quantity;
+        }
+      });
+    });
+
+    res.json({
+      success: true,
+      stats: {
+        totalProducts,
+        activeProducts,
+        totalOrders,
+        totalRevenue,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  Start Server
+// ════════════════════════════════════════════════════════
+
+connectDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`🚀 NexaMart Server running on http://localhost:${PORT}`);
+  });
+});
+
+export default app;
