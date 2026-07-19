@@ -66,6 +66,44 @@ const ProductSchema = new Schema<IProduct>(
 const Product: Model<IProduct> =
   mongoose.models.Product || mongoose.model<IProduct>("Product", ProductSchema);
 
+// ── User (Better-Auth sync) ──
+interface IUser extends Document {
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const UserSchema = new Schema<IUser>(
+  {
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    role: { type: String, default: "user" },
+    status: { type: String, default: "Active" },
+  },
+  { timestamps: true, strict: false } // Strict false because better-auth adds its own fields
+);
+
+const User: Model<IUser> =
+  mongoose.models.user || mongoose.model<IUser>("user", UserSchema, "user");
+
+// ── Settings ──
+interface ISettings extends Document {
+  storeName: string;
+  storeEmail: string;
+  currency: string;
+}
+
+const SettingsSchema = new Schema<ISettings>({
+  storeName: { type: String, default: "NexaMart BD" },
+  storeEmail: { type: String, default: "support@nexamart.com" },
+  currency: { type: String, default: "USD" },
+});
+
+const Settings: Model<ISettings> = mongoose.models.Settings || mongoose.model<ISettings>("Settings", SettingsSchema);
+
 // ── Order ──
 interface IOrderItem {
   productId: string;
@@ -136,7 +174,7 @@ const PORT = process.env.PORT || 5000;
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3001",
+    origin: ["http://localhost:3000", "http://localhost:3001", process.env.CLIENT_URL || ""],
     credentials: true,
   })
 );
@@ -223,7 +261,7 @@ app.post("/api/products", async (req: Request, res: Response) => {
     const { name, price, originalPrice, description, category, image, badge, stock, sellerId } =
       req.body;
 
-    if (!name || !price || !category || !image || !sellerId) {
+    if (!name || price === undefined || price === null || !category || !image || !sellerId) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
 
@@ -267,6 +305,57 @@ app.delete("/api/products/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: "Product not found" });
     }
     res.json({ success: true, message: "Product deleted" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  User Routes (Admin)
+// ════════════════════════════════════════════════════════
+
+app.get("/api/users", async (_req: Request, res: Response) => {
+  try {
+    const users = await User.find({}).sort({ createdAt: -1 });
+    res.json({ success: true, users });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put("/api/users/:id/role", async (req: Request, res: Response) => {
+  try {
+    const userToUpdate = await User.findById(req.params.id);
+    if (userToUpdate && userToUpdate.email === "srs@gmail.com") {
+      return res.status(403).json({ success: false, error: "Cannot change role of permanent admin" });
+    }
+
+    const { role } = req.body;
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      { role },
+      { new: true }
+    );
+    res.json({ success: true, user: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put("/api/users/:id/status", async (req: Request, res: Response) => {
+  try {
+    const userToUpdate = await User.findById(req.params.id);
+    if (userToUpdate && userToUpdate.email === "srs@gmail.com") {
+      return res.status(403).json({ success: false, error: "Cannot change status of permanent admin" });
+    }
+
+    const { status } = req.body;
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    );
+    res.json({ success: true, user: updated });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -436,6 +525,40 @@ app.get("/api/stats/seller/:sellerId", async (req: Request, res: Response) => {
         totalRevenue,
       },
     });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  Settings Routes
+// ════════════════════════════════════════════════════════
+
+app.get("/api/settings", async (_req: Request, res: Response) => {
+  try {
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = await Settings.create({});
+    }
+    res.json({ success: true, settings });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put("/api/settings", async (req: Request, res: Response) => {
+  try {
+    const { storeName, storeEmail, currency } = req.body;
+    let settings = await Settings.findOne();
+    if (settings) {
+      settings.storeName = storeName || settings.storeName;
+      settings.storeEmail = storeEmail || settings.storeEmail;
+      settings.currency = currency || settings.currency;
+      await settings.save();
+    } else {
+      settings = await Settings.create({ storeName, storeEmail, currency });
+    }
+    res.json({ success: true, settings });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
